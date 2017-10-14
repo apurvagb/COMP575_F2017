@@ -60,7 +60,9 @@ ros::Publisher target_collected_publisher;
 ros::Publisher angular_publisher;
 ros::Publisher messagePublish;
 ros::Publisher debug_publisher;
-
+ros::Publisher posePublish;
+ros::Publisher global_average_headingPublish;
+ros::Publisher local_average_headingPublish;
 //Subscribers
 ros::Subscriber joySubscriber;
 ros::Subscriber modeSubscriber;
@@ -69,6 +71,7 @@ ros::Subscriber obstacleSubscriber;
 ros::Subscriber odometrySubscriber;
 
 ros::Subscriber messageSubscriber;
+ros::Subscriber poseSubscriber;
 
 //Timers
 ros::Timer stateMachineTimer;
@@ -91,12 +94,21 @@ void mobilityStateMachine(const ros::TimerEvent &);
 void publishStatusTimerEventHandler(const ros::TimerEvent &event);
 void killSwitchTimerEventHandler(const ros::TimerEvent &event);
 void messageHandler(const std_msgs::String::ConstPtr &message);
+void poseHandler(const std_msgs::String::ConstPtr &message);
+
+struct rover_location
+{
+    string rovername;
+    float x_loc;
+    float y_loc;
+    float theta;
+};
 
 int main(int argc, char **argv)
 {
     gethostname(host, sizeof(host));
     string hostName(host);
-
+    cout<<"yES"<<endl;
     rng = new random_numbers::RandomNumberGenerator(); // instantiate random number generator
 
     if (argc >= 2)
@@ -120,6 +132,7 @@ int main(int argc, char **argv)
     obstacleSubscriber = mNH.subscribe((rover_name + "/obstacle"), 10, obstacleHandler);
     odometrySubscriber = mNH.subscribe((rover_name + "/odom/ekf"), 10, odometryHandler);
     messageSubscriber = mNH.subscribe(("messages"), 10, messageHandler);
+    poseSubscriber = mNH.subscribe(("poses"), 10, poseHandler);
 
     status_publisher = mNH.advertise<std_msgs::String>((rover_name + "/status"), 1, true);
     velocityPublish = mNH.advertise<geometry_msgs::Twist>((rover_name + "/velocity"), 10);
@@ -132,7 +145,9 @@ int main(int argc, char **argv)
     stateMachineTimer = mNH.createTimer(ros::Duration(mobility_loop_time_step), mobilityStateMachine);
     debug_publisher = mNH.advertise<std_msgs::String>("/debug", 1, true);
     messagePublish = mNH.advertise<std_msgs::String>(("messages"), 10 , true);
-    
+    posePublish = mNH.advertise<std_msgs::String>(("poses"), 10 , true);
+    global_average_headingPublish = mNH.advertise<std_msgs::String>(("global_average_heading"), 10 , true);
+    local_average_headingPublish = mNH.advertise<std_msgs::String>(("local_average_heading"), 10 , true);
     ros::spin();
     return EXIT_SUCCESS;
 }
@@ -140,6 +155,7 @@ int main(int argc, char **argv)
 void mobilityStateMachine(const ros::TimerEvent &)
 {
     std_msgs::String state_machine_msg;
+    std_msgs::String pose_msg;
 
     if ((simulation_mode == 2 || simulation_mode == 3)) // Robot is in automode
     {
@@ -177,6 +193,14 @@ void mobilityStateMachine(const ros::TimerEvent &)
         state_machine_msg.data = "WAITING, " + converter.str();
     }
     stateMachinePublish.publish(state_machine_msg);
+
+    //convert to string
+    std::stringstream converter;
+    converter << rover_name << "," << current_location.x << "," << current_location.y << "," << current_location.theta;
+    pose_msg.data = converter.str();
+    //Publish the location
+    posePublish.publish(pose_msg);
+
 }
 
 void setVelocity(double linearVel, double angularVel)
@@ -280,3 +304,164 @@ void sigintEventHandler(int sig)
 void messageHandler(const std_msgs::String::ConstPtr& message)
 {
 }
+void poseHandler(const std_msgs::String::ConstPtr& message)
+{
+    std_msgs::String global_avg_msg;
+    std_msgs::String local_avg_msg;
+    struct rover_location location_struct[3];
+    std::string delimiter =",";
+    size_t pos =0;
+    std::string token;
+    int counter_substr =0;
+    static int i =0;
+    std::string message_copy;
+    float x_avg;
+    float y_avg;
+    float theta_avg;
+    float theta_vector_1;
+    float theta_vector_0;
+    float dist12;
+    float dist13;
+    float dist23;
+    float x_avg_n;
+    float y_avg_n;
+    float theta_avg_n;
+    float theta_vector_1n;
+    float theta_vector_0n;
+
+//if condition to check the action is performed for every new message
+    if(i<3)
+    {
+        // Take copy of every message
+        message_copy = message->data;
+
+        //while loop for message parsing
+        //the theta part of message is extracted outside the while loop
+        while((pos=message_copy.find(delimiter))!=std::string::npos)
+        {
+            token = message_copy.substr(0,pos);
+            if(counter_substr ==0)
+            {
+               location_struct[i].rovername = token;
+            }
+            else if(counter_substr ==1)
+            {
+                location_struct[i].x_loc = ::atof(token.c_str());
+            }
+            else if(counter_substr ==2)
+            {
+                location_struct[i].y_loc = ::atof(token.c_str());
+            }
+
+            counter_substr++;
+            message_copy.erase(0,pos+delimiter.length());
+        }
+        if(counter_substr ==3)
+        {
+            location_struct[i].theta = ::atof(message_copy.c_str());;
+        }
+        //Reset counter for substring of message pose
+        counter_substr =0;
+    }
+    //Increment the counter to check if three messages of three rovers are received
+    i++;
+
+    //If three messages from three rovers received, calculate average
+    if(i==3)
+    {
+        //Check if all the rovers are different and then publish average
+        const char *rover_name1 = location_struct[0].rovername.c_str();
+        const char *rover_name2 = location_struct[1].rovername.c_str();
+        const char *rover_name3 = location_struct[2].rovername.c_str();
+
+        if(((rover_name1,rover_name2)!=0) && ((rover_name1,rover_name3)!=0))
+        {
+            //Calculate average for global heading
+            x_avg = (location_struct[0].x_loc+location_struct[1].x_loc+location_struct[2].x_loc)/3;
+            y_avg =(location_struct[0].y_loc+location_struct[1].y_loc+location_struct[2].y_loc)/3;
+            theta_vector_1 = (sin(location_struct[0].theta)+sin(location_struct[1].theta)+sin(location_struct[2].theta))/3;
+            theta_vector_0 = (cos(location_struct[0].theta)+cos(location_struct[1].theta)+cos(location_struct[2].theta))/3;
+            theta_avg =atan2(theta_vector_1,theta_vector_0);
+
+            //Form String to publish
+            std::stringstream converter_1;
+            converter_1 <<"global_average"<<"," << x_avg<< "," << y_avg << "," << theta_avg;
+            global_avg_msg.data = converter_1.str();
+
+            //Calculate distance for checking the neighbors
+            dist12 = sqrt(pow((location_struct[0].x_loc-location_struct[1].x_loc),2)+pow((location_struct[0].y_loc-location_struct[1].y_loc),2));
+            dist13 = sqrt(pow((location_struct[0].x_loc-location_struct[2].x_loc),2)+pow((location_struct[0].y_loc-location_struct[2].y_loc),2));
+            dist23 = sqrt(pow((location_struct[1].x_loc-location_struct[2].x_loc),2)+pow((location_struct[1].y_loc-location_struct[3].y_loc),2));
+
+            //Check which three rovers are neighbors
+
+            /*(Rovers 2,3 are neighbors of 1 and rovers 2,3 are neighbors)
+            or (Rovers 1,2 are neigbors and rovers 2,3 are neighbors) or (Rovers 1,3 are neighbors and rovers 2,3 are neighbors)
+            or Rovers 2,3 are neighbors of 1*/
+
+           if((dist12 <=2 && dist13<=2 && dist23<=2) || (dist12 <=2 && dist23 <=2) || (dist13<=2 && dist23<=2)
+              ||(dist12 <=2 && dist13<=2))
+            {
+                //Calculate average
+                x_avg_n = (location_struct[0].x_loc+location_struct[1].x_loc+location_struct[2].x_loc)/3;
+                y_avg_n =(location_struct[0].y_loc+location_struct[1].y_loc+location_struct[2].y_loc)/3;
+                theta_vector_1n = (sin(location_struct[0].theta)+sin(location_struct[1].theta)+sin(location_struct[2].theta))/3;
+                theta_vector_0n = (cos(location_struct[0].theta)+cos(location_struct[1].theta)+cos(location_struct[2].theta))/3;
+                theta_avg_n =atan2(theta_vector_1n,theta_vector_0n);
+            }
+            /* Rovers 1,2 are neighbors and Rovers1,3 are not and Rovers 2,3 are not*/
+           else if(dist12 <=2 && dist13>2 && dist23>2)
+            {
+                //Calculate average
+                x_avg_n = (location_struct[0].x_loc+location_struct[1].x_loc)/2;
+                y_avg_n =(location_struct[0].y_loc+location_struct[1].y_loc)/2;
+                theta_vector_1n = (sin(location_struct[0].theta)+sin(location_struct[1].theta))/2;
+                theta_vector_0n = (cos(location_struct[0].theta)+cos(location_struct[1].theta))/2;
+                theta_avg_n =atan2(theta_vector_1n,theta_vector_0n);
+            }
+            /* Rovers 1,3 are neighbors and Rovers1,2 are not and Rovers 2,3 are not*/
+           else if (dist12>2 && dist13<=2 && dist23>2)
+            {
+                //Calculate average
+                x_avg_n = (location_struct[0].x_loc+location_struct[2].x_loc)/2;
+                y_avg_n =(location_struct[0].y_loc+location_struct[2].y_loc)/2;
+                theta_vector_1n = (sin(location_struct[0].theta)+sin(location_struct[2].theta))/2;
+                theta_vector_0n = (cos(location_struct[0].theta)+cos(location_struct[2].theta))/2;
+                theta_avg_n =atan2(theta_vector_1n,theta_vector_0n);
+
+            }
+            /* Rovers 2,3 are neighbors and Rovers1,2 are not and Rovers 1,3 are not*/
+            else if (dist12>2 && dist13>2 && dist23<=2)
+            {
+                //Calculate average
+                x_avg_n = (location_struct[1].x_loc+location_struct[2].x_loc)/2;
+                y_avg_n =(location_struct[1].y_loc+location_struct[2].y_loc)/2;
+                theta_vector_1n = (sin(location_struct[1].theta)+sin(location_struct[2].theta))/2;
+                theta_vector_0n = (cos(location_struct[1].theta)+cos(location_struct[2].theta))/2;
+                theta_avg_n =atan2(theta_vector_1n,theta_vector_0n);
+
+            }
+            /*None of them is neighbour*/
+            else if(dist12 >2 && dist13>2 && dist23>2)
+            {
+               x_avg_n =0;
+               y_avg_n=0;
+               theta_avg_n=0;
+            }
+
+            //Form String to publish
+            std::stringstream converter_2;
+            converter_2 <<"local_average"<<"," << x_avg_n<< "," << y_avg_n << "," << theta_avg_n;
+            local_avg_msg.data = converter_2.str();
+
+            //Publish the gloabl average
+            global_average_headingPublish.publish(global_avg_msg);
+
+            //Publish the local average
+            local_average_headingPublish.publish(local_avg_msg);
+        }
+        //Reset the three message counter
+        i=0;
+    }
+}
+

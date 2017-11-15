@@ -48,8 +48,7 @@ pose current_location;
 int transitions_to_auto = 0;
 double time_stamp_transition_to_auto = 0.0;
 
-// Proportional constant kp
-float Kp;
+
 
 //Structure for Rover Pose
 struct rover_location
@@ -65,7 +64,11 @@ std_msgs::String local_avg_msg;
 struct rover_location location_struct[NO_OF_ROVERS];
 float global_avg =0.0;
 float local_avg =0.0;
-
+float average_x_position =0.0;
+float average_y_position =0.0;
+float direction_theta;
+// Proportional constant kp
+float Kp;
 
 // state machine states
 #define STATE_MACHINE_TRANSLATE 0
@@ -131,7 +134,7 @@ int main(int argc, char **argv)
     } else
     {
         rover_name = hostName;
-        cout << "No Name Selected. Default is: " << rover_name << endl;
+        cout << "No Name Selectaverage_x_positioned. Default is: " << rover_name << endl;
     }
     // NoSignalHandler so we can catch SIGINT ourselves and shutdown the node
     ros::init(argc, argv, (rover_name + "_MOBILITY"), ros::init_options::NoSigintHandler);
@@ -146,7 +149,6 @@ int main(int argc, char **argv)
     odometrySubscriber = mNH.subscribe((rover_name + "/odom/ekf"), 10, odometryHandler);
     messageSubscriber = mNH.subscribe(("messages"), 10, messageHandler);
     poseSubscriber = mNH.subscribe(("poses"), 10, poseHandler);
-
     status_publisher = mNH.advertise<std_msgs::String>((rover_name + "/status"), 1, true);
     velocityPublish = mNH.advertise<geometry_msgs::Twist>((rover_name + "/velocity"), 10);
     stateMachinePublish = mNH.advertise<std_msgs::String>((rover_name + "/state_machine"), 1, true);
@@ -187,10 +189,11 @@ void mobilityStateMachine(const ros::TimerEvent &)
             //float linear_velocity = 0.1;
 
             float angular_velocity;
-            float linear_velocity = 0.0;
-            Kp= 3.26;
+            float linear_velocity = 0.05;
+            Kp= 0.5;
             //angular_velocity = Kp * (global_avg - current_location.theta);
-            angular_velocity = Kp * (local_avg - current_location.theta);
+            angular_velocity = Kp * (direction_theta - current_location.theta);
+            //angular_velocity = Kp * (local_avg - current_location.theta);
             setVelocity(linear_velocity, angular_velocity);
             break;
         }
@@ -203,7 +206,7 @@ void mobilityStateMachine(const ros::TimerEvent &)
 
     }
     else
-    { // mode is NOT auto
+    { // mode is NOT autor
 
         // publish current state for the operator to seerotational_controller
         std::stringstream converter;
@@ -386,6 +389,7 @@ float calculate_Neighbors_LocalAvg(int input_index)
     bool neighbor_found = 0;
     float theta_avg_loc =0.0;
 
+
     for(n=0;n<NO_OF_ROVERS;n++)
     {
         if(input_index!=n)
@@ -395,7 +399,10 @@ float calculate_Neighbors_LocalAvg(int input_index)
             {
                 sin_theta_sum_loc += sin(location_struct[n].theta);
                 cos_theta_sum_loc += cos(location_struct[n].theta);
+                average_x_position += (location_struct[input_index].x_loc-location_struct[n].x_loc);
+                average_y_position += (location_struct[input_index].y_loc-location_struct[n].y_loc);
                 neighbor_found = 1;
+
 
             }
         }
@@ -403,13 +410,16 @@ float calculate_Neighbors_LocalAvg(int input_index)
     }
     if(neighbor_found==0)
     {
-        sin_theta_sum_loc = sin(location_struct[input_index].theta);
-        cos_theta_sum_loc = cos(location_struct[input_index].theta);
+       sin_theta_sum_loc = sin(location_struct[input_index].theta);
+       cos_theta_sum_loc = cos(location_struct[input_index].theta);
+       average_x_position = location_struct[input_index].x_loc;
+       average_y_position = location_struct[input_index].y_loc;
     }
 
     theta_avg_loc = atan2(sin_theta_sum_loc,cos_theta_sum_loc);
+    direction_theta = atan2(average_y_position,average_x_position);
     neighbor_found =0;
-    return theta_avg_loc;
+    //return theta_avg_loc;
 }
 
 void poseHandler(const std_msgs::String::ConstPtr& message)

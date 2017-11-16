@@ -399,8 +399,8 @@ float calculate_Neighbors_LocalAvg(int input_index)
             {
                 sin_theta_sum_loc += sin(location_struct[n].theta);
                 cos_theta_sum_loc += cos(location_struct[n].theta);
-                average_x_position += (location_struct[input_index].x_loc-location_struct[n].x_loc);
-                average_y_position += (location_struct[input_index].y_loc-location_struct[n].y_loc);
+                average_x_position +=(location_struct[input_index].x_loc + ((location_struct[n].x_loc-location_struct[input_index].x_loc)/NO_OF_ROVERS));
+                average_y_position +=(location_struct[input_index].y_loc+ ((location_struct[n].y_loc-location_struct[input_index].y_loc)/NO_OF_ROVERS));
                 neighbor_found = 1;
 
 

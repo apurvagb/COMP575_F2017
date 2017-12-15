@@ -64,11 +64,20 @@ std_msgs::String local_avg_msg;
 struct rover_location location_struct[NO_OF_ROVERS];
 float global_avg =0.0;
 float local_avg =0.0;
-float average_x_position =0.0;
-float average_y_position =0.0;
+
+float average_x_position_algnmnt = 0.0;
+float average_y_position_algnmnt =0.0;
+float average_x_position_sep =0.0;
+float average_y_position_sep =0.0;
+float sin_theta_sum_loc =0.0;
+float cos_theta_sum_loc=0.0;
 float direction_theta;
+float final_theta;
+float desired_x;
+float desired_y;
 // Proportional constant kp
 float Kp;
+
 
 // state machine states
 #define STATE_MACHINE_TRANSLATE 0
@@ -185,15 +194,21 @@ void mobilityStateMachine(const ros::TimerEvent &)
         case STATE_MACHINE_TRANSLATE:
         {
             state_machine_msg.data = "TRANSLATING";//, " + converter.str();
-            //float angular_velocity = 0.2;
-            //float linear_velocity = 0.1;
 
             float angular_velocity;
             float linear_velocity = 0.05;
+
             Kp= 0.5;
+
+            // Add all positions: cohesion, alignment and dseparation
+            desired_x = cos_theta_sum_loc + average_x_position_algnmnt + average_x_position_sep;
+            desired_y = sin_theta_sum_loc + average_y_position_algnmnt+ average_y_position_sep;
+            final_theta = atan2(desired_y,desired_x);
             //angular_velocity = Kp * (global_avg - current_location.theta);
-            angular_velocity = Kp * (direction_theta - current_location.theta);
             //angular_velocity = Kp * (local_avg - current_location.theta);
+            //angular_velocity = Kp * (direction_theta - current_location.theta);
+
+            angular_velocity = Kp * (final_theta - current_location.theta);
             setVelocity(linear_velocity, angular_velocity);
             break;
         }
@@ -384,8 +399,8 @@ float calculate_Neighbors_LocalAvg(int input_index)
 {
     int n;
     float dist;
-    float sin_theta_sum_loc =0.0;
-    float cos_theta_sum_loc =0.0;
+    //float sin_theta_sum_loc =0.0;
+    //float cos_theta_sum_loc =0.0;
     bool neighbor_found = 0;
     float theta_avg_loc =0.0;
 
@@ -397,10 +412,12 @@ float calculate_Neighbors_LocalAvg(int input_index)
             dist = sqrt(pow((location_struct[input_index].x_loc-location_struct[n].x_loc),2)+pow((location_struct[input_index].y_loc-location_struct[n].y_loc),2));
             if(dist <= 2)
             {
+                /* Cohesion */
                 sin_theta_sum_loc += sin(location_struct[n].theta);
                 cos_theta_sum_loc += cos(location_struct[n].theta);
-                average_x_position +=(location_struct[input_index].x_loc + ((location_struct[n].x_loc-location_struct[input_index].x_loc)/NO_OF_ROVERS));
-                average_y_position +=(location_struct[input_index].y_loc+ ((location_struct[n].y_loc-location_struct[input_index].y_loc)/NO_OF_ROVERS));
+                /* Alignment */
+                average_x_position_algnmnt +=(location_struct[input_index].x_loc + ((location_struct[n].x_loc-location_struct[input_index].x_loc)/NO_OF_ROVERS));
+                average_y_position_algnmnt +=(location_struct[input_index].y_loc+ ((location_struct[n].y_loc-location_struct[input_index].y_loc)/NO_OF_ROVERS));
                 neighbor_found = 1;
 
 
@@ -412,14 +429,40 @@ float calculate_Neighbors_LocalAvg(int input_index)
     {
        sin_theta_sum_loc = sin(location_struct[input_index].theta);
        cos_theta_sum_loc = cos(location_struct[input_index].theta);
-       average_x_position = location_struct[input_index].x_loc;
-       average_y_position = location_struct[input_index].y_loc;
+       average_x_position_algnmnt = location_struct[input_index].x_loc;
+       average_x_position_algnmnt = location_struct[input_index].y_loc;
     }
 
     theta_avg_loc = atan2(sin_theta_sum_loc,cos_theta_sum_loc);
-    direction_theta = atan2(average_y_position,average_x_position);
+    //direction_theta = atan2(average_y_position,average_x_position);
     neighbor_found =0;
-    //return theta_avg_loc;
+    return theta_avg_loc;
+}
+/* Separation logic */
+float Separation_logic(int input_index)
+{
+    int n;
+    float distance;
+
+    for(n=0;n<NO_OF_ROVERS;n++)
+    {
+        if(input_index!=n)
+        {
+            distance = sqrt(pow((location_struct[input_index].x_loc-location_struct[n].x_loc),2)+pow((location_struct[input_index].y_loc-location_struct[n].y_loc),2));
+            if(distance > 0 && distance <= 3)
+            {
+                average_x_position_sep +=(location_struct[input_index].x_loc + ((location_struct[n].x_loc-location_struct[input_index].x_loc)))/distance;
+                average_y_position_sep +=(location_struct[input_index].y_loc+ ((location_struct[n].y_loc-location_struct[input_index].y_loc)))/distance;
+
+            }
+            else
+            {
+                average_x_position_sep = location_struct[input_index].x_loc;
+                average_y_position_sep = location_struct[input_index].y_loc;
+            }
+        }
+
+    }
 }
 
 void poseHandler(const std_msgs::String::ConstPtr& message)
@@ -453,7 +496,8 @@ void poseHandler(const std_msgs::String::ConstPtr& message)
 
     global_avg = Calculate_Global_Avg();
     local_avg = calculate_Neighbors_LocalAvg(rover_index);
-
+    //Added separation logic
+    Separation_logic(rover_index);
     //Form String to publish for global average
     std::stringstream converter_1;
     converter_1 <<"global_average"<<":" << global_avg;

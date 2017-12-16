@@ -47,7 +47,7 @@ pose current_location;
 
 int transitions_to_auto = 0;
 double time_stamp_transition_to_auto = 0.0;
-
+enum Leader_State{FALSE,TRUE,UNKNOWN};
 
 
 //Structure for Rover Pose
@@ -58,10 +58,18 @@ struct rover_location
     float y_loc;
     float theta;
 };
+struct rover_leader_info
+{
+    int UID;
+    Leader_State leader_state;
+    int Max_ID_received;
+    int Diam_S;
+};
 
 std_msgs::String global_avg_msg;
 std_msgs::String local_avg_msg;
 struct rover_location location_struct[NO_OF_ROVERS];
+struct rover_leader_info leader_struct[NO_OF_ROVERS];
 float global_avg =0.0;
 float local_avg =0.0;
 
@@ -79,6 +87,7 @@ float desired_y;
 float Kp;
 
 
+
 // state machine states
 #define STATE_MACHINE_TRANSLATE 0
 int state_machine_state = STATE_MACHINE_TRANSLATE;
@@ -94,6 +103,8 @@ ros::Publisher debug_publisher;
 ros::Publisher posePublish;
 ros::Publisher global_average_headingPublish;
 ros::Publisher local_average_headingPublish;
+ros::Publisher leader_headingPublish;
+ros::Publisher leader_headingPublish1;
 //Subscribers
 ros::Subscriber joySubscriber;
 ros::Subscriber modeSubscriber;
@@ -103,6 +114,7 @@ ros::Subscriber odometrySubscriber;
 
 ros::Subscriber messageSubscriber;
 ros::Subscriber poseSubscriber;
+ros::Subscriber leaderSubscriber;
 
 //Timers
 ros::Timer stateMachineTimer;
@@ -126,7 +138,21 @@ void publishStatusTimerEventHandler(const ros::TimerEvent &event);
 void killSwitchTimerEventHandler(const ros::TimerEvent &event);
 void messageHandler(const std_msgs::String::ConstPtr &message);
 void poseHandler(const std_msgs::String::ConstPtr &message);
+//leader algorithm
+void leaderhandler(const std_msgs::String::ConstPtr &message);
 
+
+int Initialize_RoverInfo()
+{
+    int i;
+    for(i =0;i < NO_OF_ROVERS;i++)
+    {
+        leader_struct[i].UID = i;
+        leader_struct[i].Max_ID_received = i;
+        leader_struct[i].leader_state = UNKNOWN;
+        leader_struct[i].Diam_S = 0;
+    }
+}
 
 
 int main(int argc, char **argv)
@@ -145,6 +171,8 @@ int main(int argc, char **argv)
         rover_name = hostName;
         cout << "No Name Selectaverage_x_positioned. Default is: " << rover_name << endl;
     }
+    //Initialize the rover UID and state
+    Initialize_RoverInfo();
     // NoSignalHandler so we can catch SIGINT ourselves and shutdown the node
     ros::init(argc, argv, (rover_name + "_MOBILITY"), ros::init_options::NoSigintHandler);
     ros::NodeHandle mNH;
@@ -158,6 +186,8 @@ int main(int argc, char **argv)
     odometrySubscriber = mNH.subscribe((rover_name + "/odom/ekf"), 10, odometryHandler);
     messageSubscriber = mNH.subscribe(("messages"), 10, messageHandler);
     poseSubscriber = mNH.subscribe(("poses"), 10, poseHandler);
+    leaderSubscriber = mNH.subscribe(("leader"), 10, poseHandler);
+
     status_publisher = mNH.advertise<std_msgs::String>((rover_name + "/status"), 1, true);
     velocityPublish = mNH.advertise<geometry_msgs::Twist>((rover_name + "/velocity"), 10);
     stateMachinePublish = mNH.advertise<std_msgs::String>((rover_name + "/state_machine"), 1, true);
@@ -172,6 +202,11 @@ int main(int argc, char **argv)
     posePublish = mNH.advertise<std_msgs::String>(("poses"), 10 , true);
     global_average_headingPublish = mNH.advertise<std_msgs::String>(("global_average_heading"), 10 , true);
     local_average_headingPublish = mNH.advertise<std_msgs::String>(( "local_average_heading"), 10 , true);
+
+    leader_headingPublish = mNH.advertise<std_msgs::String>(( "Floodmax"), 10 , true);
+    leader_headingPublish1 = mNH.advertise<std_msgs::String>(( "leader"), 10 , true);
+
+
     ros::spin();
     return EXIT_SUCCESS;
 }
@@ -180,6 +215,7 @@ void mobilityStateMachine(const ros::TimerEvent &)
 {
     std_msgs::String state_machine_msg;
     std_msgs::String pose_msg;
+    std_msgs::String leader_UID_msg;
 
     if ((simulation_mode == 2 || simulation_mode == 3)) // Robot is in automode
     {
@@ -238,6 +274,12 @@ void mobilityStateMachine(const ros::TimerEvent &)
     //Publish the location
     posePublish.publish(pose_msg);
 
+    std:: stringstream converter_leader;
+    converter_leader << rover_name;
+    leader_UID_msg.data = converter_leader.str();
+
+    //Publish Leader
+    leader_headingPublish.publish(leader_UID_msg);
 }
 
 void setVelocity(double linearVel, double angularVel)
@@ -465,6 +507,9 @@ float Separation_logic(int input_index)
     }
 }
 
+
+
+
 void poseHandler(const std_msgs::String::ConstPtr& message)
 {
    // int counter_substr =0;
@@ -516,6 +561,64 @@ void poseHandler(const std_msgs::String::ConstPtr& message)
 
 
 }
+int msg(int input_index)
+{
+    if(leader_struct[input_index].Diam_S < NO_OF_ROVERS)
+    {
+        return leader_struct[input_index].Max_ID_received;
+    }
+    else
+    {
+        return 0;
+    }
+}
+
+void stf(int input_index)
+{
+    if(leader_struct[input_index].Max_ID_received < leader_struct[input_index].UID)
+    {
+        leader_struct[input_index].Max_ID_received = leader_struct[input_index].UID;
+    }
+    if(leader_struct[input_index].Diam_S == NO_OF_ROVERS)
+    {
+        if(leader_struct[input_index].Max_ID_received  == leader_struct[input_index].UID)
+        {
+            leader_struct[input_index].leader_state = TRUE;
+            std_msgs::String leader_UID_msg1;
+            std:: stringstream converter_leader1;
+            converter_leader1 << location_struct[input_index].rovername;
+            leader_UID_msg1.data = converter_leader1.str();
+
+            //Publish Leader
+            leader_headingPublish1.publish(leader_UID_msg1);
+        }
+        else
+        {
+            leader_struct[input_index].leader_state = FALSE;
+        }
 
 
+    }
+    else
+    {
+        leader_struct[input_index].Diam_S ++;
+    }
+}
+
+void leaderhandler(const std_msgs::String::ConstPtr &message)
+{
+    std::string message_copy1;
+    int rover_index;
+    int output_msg_func;
+
+    // Take copy of every message
+    message_copy1 = message->data;
+
+
+    /* Check the name of rover and store the message in rover structre */
+   rover_index = getRoverNameIndex(message_copy1);
+
+   output_msg_func = msg(rover_index);
+   stf(rover_index);
+}
 
